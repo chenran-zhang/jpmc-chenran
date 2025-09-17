@@ -1,35 +1,27 @@
 # Income Classification and Segmentation
 
-This repository contains code and analysis for predicting whether an individual's annual income exceeds $50,000 using U.S. Census data. The project applies several machine learning models and explores segmentation strategies for both modeling and marketing perspectives.
+This repository presents an analysis of U.S. Census data with the goal of predicting whether an individual's annual income exceeds $50,000. The project applies standard data processing, exploratory analysis, classification models, and segmentation strategies.
 
-## Project Structure
-- **Module A**: Feature preparation  
-- **Module B**: Train/Test split by calendar year  
-- **Module C**: Target encoding of categorical variables  
-- **Module D**: Feature/target separation  
-- **Module E**: Downsampling for class balance  
-- **Modeling**: Logistic Regression, Decision Tree, XGBoost  
-- **Segmentation**:  
-  - Model segmentation (train/evaluate separate models by gender)  
-  - Score-based segmentation (rules using predicted probability and gender)  
+## Workflow
 
-## Methods
-- Categorical variables are encoded using target encoding on the training set.  
-- Train/Test split follows the dataset’s year variable (1994 as train, 1995 as test).  
-- Logistic Regression, Decision Tree, and XGBoost are applied for classification.  
-- Segmentation is performed in two ways:  
-  1. Separate models by gender to compare performance.  
-  2. Define target groups using prediction scores combined with demographic rules.  
+### Data Preparation
+The dataset was cleaned and relevant features were selected. Categorical variables were handled using target encoding, while numerical variables were kept in their original form. To address class imbalance, downsampling of the majority class was applied in the training data.
 
-## Results
-- Logistic Regression provides a baseline for interpretability.  
-- Decision Tree illustrates key splits and variable importance.  
-- XGBoost achieves the strongest performance among the tested models.  
-- Segmentation helps identify subgroups with higher likelihood of high income.  
+### Exploratory Data Analysis
+Basic descriptive statistics and visualizations were used to understand the distribution of variables, class imbalance, and relationships between demographic characteristics and income.
 
-## Visualizations
-- ROC curves for Logistic Regression, Decision Tree, and XGBoost.  
-- Confusion matrices for selected models.  
-- Decision tree visualization (limited depth).  
-- ROC comparison by gender segmentation.  
-- Score-based segmentation summary tables.  
+### Modeling
+Three classification models were implemented:
+- **Logistic Regression** as a baseline model.  
+- **Decision Tree** to illustrate interpretability through decision rules.  
+- **XGBoost** as a gradient boosting model providing the strongest predictive performance.  
+
+Models were evaluated on the test set using accuracy, ROC–AUC, confusion matrices, and classification reports.
+
+### Segmentation
+Segmentation was carried out in two ways:
+1. **Model segmentation**: separate models were trained for male and female subpopulations to evaluate whether performance improves compared to a single overall model.  
+2. **Score-based segmentation**: marketing-oriented groups were defined using predicted probabilities and gender, identifying subgroups with a substantially higher likelihood of high income.
+
+### Visualization
+The analysis includes ROC curves for each model, confusion matrices for selected classifiers, a tree visualization for the Decision Tree model, and ROC curves by gender segments. Segmentation results are summarized in tables.
