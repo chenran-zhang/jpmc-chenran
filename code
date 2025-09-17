@@ -1,0 +1,404 @@
+# ============================================================
+# Income >50K Classification and Segmentation Pipeline (Clean)
+# ============================================================
+
+# -------------------------
+# Imports and Configuration
+# -------------------------
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier, plot_tree
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    roc_curve,
+    roc_auc_score
+)
+
+# Optional: XGBoost (for stronger baseline and score-based segmentation)
+from xgboost import XGBClassifier
+
+
+# ===========================================
+# Module A: Build the feature dataframe (base)
+# ===========================================
+# Assumptions:
+# - `df_processed` exists.
+# - Columns include: 'year' (94=train, 95=test), 'label_encoded' (0/1),
+#   and the categorical variables listed below.
+
+selected_categorical_features = [
+    'class of worker', 'education', 'marital stat', 'major industry code',
+    'major occupation code', 'race', 'sex', 'member of a labor union',
+    'full or part time employment stat', 'detailed household summary in household'
+]
+
+numerical_cols = df_processed.select_dtypes(include=np.number).columns.tolist()
+
+required_cols = list(set(
+    numerical_cols + selected_categorical_features + ['year', 'label_encoded']
+))
+
+df_full_features = df_processed[required_cols].copy()
+print("Module A: Prepared df_full_features.")
+display(df_full_features.head())
+
+
+# =================================================
+# Module B: Split train/test strictly by calendar
+# =================================================
+train_df = df_full_features[df_full_features['year'] == 94].copy()
+test_df  = df_full_features[df_full_features['year'] == 95].copy()
+
+train_df.drop(columns=['year'], inplace=True)
+test_df.drop(columns=['year'], inplace=True)
+
+print("Module B: Train/Test split completed.")
+print(f"Train shape: {train_df.shape} | Test shape: {test_df.shape}")
+
+
+# ============================================================
+# Module C: Target Encoding (simple; overwrite categorical)
+# ============================================================
+# Note:
+# - Compute mean target on TRAIN only.
+# - Map to both TRAIN and TEST.
+# - Fill unseen categories in TEST by the global mean of TRAIN.
+
+print("Module C: Applying target encoding (overwrite categorical columns).")
+
+global_mean = train_df['label_encoded'].mean()
+
+for col in selected_categorical_features:
+    enc_map = train_df.groupby(col)['label_encoded'].mean()
+    train_df[col] = train_df[col].map(enc_map)
+    test_df[col]  = test_df[col].map(enc_map)
+    test_df[col].fillna(global_mean, inplace=True)
+
+print("Module C: Target encoding completed.")
+display(train_df.head())
+
+
+# ======================================================
+# Module D: Separate features and target (no scaling)
+# ======================================================
+X_train = train_df.drop(columns=['label_encoded'])
+y_train = train_df['label_encoded'].copy()
+
+X_test  = test_df.drop(columns=['label_encoded'])
+y_test  = test_df['label_encoded'].copy()
+
+print("Module D: Split X/y completed.")
+print(f"X_train: {X_train.shape} | X_test: {X_test.shape}")
+
+
+# =====================================================
+# Module E: Downsampling majority class (train only)
+# =====================================================
+# Keep class balance for interpretable baselines.
+
+df_train_tmp = X_train.copy()
+df_train_tmp['label_encoded'] = y_train
+
+df_maj = df_train_tmp[df_train_tmp['label_encoded'] == 0]
+df_min = df_train_tmp[df_train_tmp['label_encoded'] == 1]
+
+df_maj_ds = df_maj.sample(n=len(df_min), random_state=42)
+df_ds = pd.concat([df_maj_ds, df_min], axis=0).sample(frac=1, random_state=42).reset_index(drop=True)
+
+X_train_resampled = df_ds.drop(columns=['label_encoded'])
+y_train_resampled = df_ds['label_encoded'].copy()
+
+print("Module E: Downsampling completed.")
+print("Class distribution after downsampling (train):")
+display(y_train_resampled.value_counts())
+
+
+# ==========================================
+# Model 1: Logistic Regression (baseline)
+# ==========================================
+def run_logreg(X_tr, y_tr, X_te, y_te, title="Logistic Regression"):
+    model = LogisticRegression(random_state=42, max_iter=1000, solver='liblinear', class_weight=None)
+    model.fit(X_tr, y_tr)
+
+    y_pred = model.predict(X_te)
+    y_proba = model.predict_proba(X_te)[:, 1]
+
+    acc = accuracy_score(y_te, y_pred)
+    auc = roc_auc_score(y_te, y_proba)
+
+    print(f"\n--- {title} ---")
+    print(f"Accuracy: {acc:.4f} | AUC: {auc:.4f}\n")
+    print(classification_report(y_te, y_pred, target_names=['<=50K (0)', '>50K (1)']))
+
+    # Confusion Matrix
+    cm = confusion_matrix(y_te, y_pred)
+    plt.figure(figsize=(6, 5))
+    plt.imshow(cm, cmap='Blues')
+    plt.title(f'{title} - Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.xticks([0,1], ['<=50K', '>50K'])
+    plt.yticks([0,1], ['<=50K', '>50K'])
+    for (i, j), v in np.ndenumerate(cm):
+        plt.text(j, i, int(v), ha='center', va='center')
+    plt.tight_layout()
+    plt.show()
+
+    # ROC Curve
+    fpr, tpr, _ = roc_curve(y_te, y_proba)
+    plt.figure(figsize=(6, 5))
+    plt.plot(fpr, tpr, lw=2, label=f'ROC (AUC={auc:.2f})')
+    plt.plot([0, 1], [0, 1], linestyle='--', lw=1.5, label='Random')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(f'{title} - ROC Curve')
+    plt.legend(loc='lower right')
+    plt.grid(alpha=0.25)
+    plt.tight_layout()
+    plt.show()
+
+    return model, y_proba, acc, auc
+
+log_model, y_proba_log, acc_log, auc_log = run_logreg(
+    X_train_resampled, y_train_resampled, X_test, y_test, title="Logistic Regression (Downsampled Train)"
+)
+
+
+# ==========================================
+# Model 2: Decision Tree (simple baseline)
+# ==========================================
+def run_decision_tree(X_tr, y_tr, X_te, y_te, max_depth=4, title="Decision Tree"):
+    model = DecisionTreeClassifier(max_depth=max_depth, random_state=42)
+    model.fit(X_tr, y_tr)
+
+    y_pred = model.predict(X_te)
+    y_proba = model.predict_proba(X_te)[:, 1]
+
+    acc = accuracy_score(y_te, y_pred)
+    auc = roc_auc_score(y_te, y_proba)
+
+    print(f"\n--- {title} ---")
+    print(f"Accuracy: {acc:.4f} | AUC: {auc:.4f}\n")
+    print(classification_report(y_te, y_pred, target_names=['<=50K (0)', '>50K (1)']))
+
+    # Confusion Matrix
+    cm = confusion_matrix(y_te, y_pred)
+    plt.figure(figsize=(6, 5))
+    plt.imshow(cm, cmap='Greens')
+    plt.title(f'{title} - Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.xticks([0,1], ['<=50K', '>50K'])
+    plt.yticks([0,1], ['<=50K', '>50K'])
+    for (i, j), v in np.ndenumerate(cm):
+        plt.text(j, i, int(v), ha='center', va='center')
+    plt.tight_layout()
+    plt.show()
+
+    # Tree Visualization
+    plt.figure(figsize=(22, 12))
+    plot_tree(
+        model,
+        feature_names=X_tr.columns.tolist(),
+        class_names=['<=50K', '>50K'],
+        filled=True,
+        rounded=True,
+        fontsize=9
+    )
+    plt.title(f'{title} Structure (max_depth={max_depth})')
+    plt.tight_layout()
+    plt.show()
+
+    # ROC Curve
+    fpr, tpr, _ = roc_curve(y_te, y_proba)
+    plt.figure(figsize=(6, 5))
+    plt.plot(fpr, tpr, lw=2, label=f'ROC (AUC={auc:.2f})')
+    plt.plot([0, 1], [0, 1], linestyle='--', lw=1.5, label='Random')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(f'{title} - ROC Curve')
+    plt.legend(loc='lower right')
+    plt.grid(alpha=0.25)
+    plt.tight_layout()
+    plt.show()
+
+    return model, y_proba, acc, auc
+
+tree_model, y_proba_tree, acc_tree, auc_tree = run_decision_tree(
+    X_train_resampled, y_train_resampled, X_test, y_test,
+    max_depth=4, title="Decision Tree (Downsampled Train)"
+)
+
+
+# ==========================================
+# Model 3: XGBoost (stronger baseline)
+# ==========================================
+def run_xgboost(X_tr, y_tr, X_te, y_te, title="XGBoost"):
+    # Align columns (safety)
+    X_te_aligned = X_te[X_tr.columns]
+
+    model = XGBClassifier(
+        n_estimators=500,
+        learning_rate=0.05,
+        max_depth=6,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_lambda=1.0,
+        random_state=42,
+        n_jobs=-1,
+        tree_method='hist',
+        eval_metric='auc'
+    )
+    model.fit(X_tr, y_tr)
+
+    y_pred = model.predict(X_te_aligned)
+    y_proba = model.predict_proba(X_te_aligned)[:, 1]
+
+    acc = accuracy_score(y_te, y_pred)
+    auc = roc_auc_score(y_te, y_proba)
+
+    print(f"\n--- {title} ---")
+    print(f"Accuracy: {acc:.4f} | AUC: {auc:.4f}\n")
+    print(classification_report(y_te, y_pred, target_names=['<=50K (0)', '>50K (1)']))
+
+    # Confusion Matrix
+    cm = confusion_matrix(y_te, y_pred)
+    plt.figure(figsize=(6, 5))
+    plt.imshow(cm, cmap='Blues')
+    plt.title(f'{title} - Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.xticks([0,1], ['<=50K', '>50K'])
+    plt.yticks([0,1], ['<=50K', '>50K'])
+    for (i, j), v in np.ndenumerate(cm):
+        plt.text(j, i, int(v), ha='center', va='center')
+    plt.tight_layout()
+    plt.show()
+
+    # ROC Curve
+    fpr, tpr, _ = roc_curve(y_te, y_proba)
+    plt.figure(figsize=(6, 5))
+    plt.plot(fpr, tpr, lw=2, label=f'ROC (AUC={auc:.2f})')
+    plt.plot([0, 1], [0, 1], linestyle='--', lw=1.5, label='Random')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(f'{title} - ROC Curve')
+    plt.legend(loc='lower right')
+    plt.grid(alpha=0.25)
+    plt.tight_layout()
+    plt.show()
+
+    return model, y_proba, acc, auc
+
+xgb_model, y_proba_xgb, acc_xgb, auc_xgb = run_xgboost(
+    X_train_resampled, y_train_resampled, X_test, y_test, title="XGBoost (Downsampled Train)"
+)
+
+
+# ==========================================================
+# Model Segmentation (by sex) with Logistic Regression
+# ==========================================================
+# Note:
+# - sex is target-encoded numeric after Module C.
+# - Identify which numeric value corresponds to male/female using train positive rates.
+
+sex_vals = np.sort(X_train_resampled['sex'].dropna().unique())
+if len(sex_vals) != 2:
+    raise ValueError(f"Expected 2 unique sex values after target encoding, got {len(sex_vals)}: {sex_vals}")
+
+v_low, v_high = sex_vals[0], sex_vals[1]
+rate_low  = y_train_resampled[X_train_resampled['sex'] == v_low].mean()
+rate_high = y_train_resampled[X_train_resampled['sex'] == v_high].mean()
+
+sex_male_val   = v_high if rate_high >= rate_low else v_low
+sex_female_val = v_low  if sex_male_val == v_high else v_high
+
+print(f"\nDetected encoded sex values -> Female: {sex_female_val:.6f}, Male: {sex_male_val:.6f}")
+
+def subset_by_sex(X_tr, y_tr, X_te, y_te, sex_val):
+    tr_mask = (X_tr['sex'] == sex_val)
+    te_mask = (X_te['sex'] == sex_val)
+    Xtr = X_tr.loc[tr_mask].drop(columns=['sex'])
+    ytr = y_tr.loc[tr_mask]
+    Xte = X_te.loc[te_mask].drop(columns=['sex'])
+    yte = y_te.loc[te_mask]
+    return Xtr, ytr, Xte, yte
+
+# Overall (drop sex to avoid leakage)
+X_train_all = X_train_resampled.drop(columns=['sex'])
+y_train_all = y_train_resampled
+X_test_all  = X_test.drop(columns=['sex'])
+y_test_all  = y_test
+
+# Train/evaluate overall and per-sex logistic regression
+_ = plt.figure(figsize=(6, 5))  # reserve ROC canvas
+
+def run_logreg_roc_only(X_tr, y_tr, X_te, y_te, label):
+    mdl = LogisticRegression(random_state=42, max_iter=2000, solver='liblinear')
+    mdl.fit(X_tr, y_tr)
+    proba = mdl.predict_proba(X_te)[:, 1]
+    auc = roc_auc_score(y_te, proba)
+    fpr, tpr, _ = roc_curve(y_te, proba)
+    plt.plot(fpr, tpr, lw=2, label=f'{label} (AUC={auc:.3f})')
+    return auc
+
+auc_overall_lr = run_logreg_roc_only(X_train_all, y_train_all, X_test_all, y_test_all, 'Overall LR')
+
+X_train_m, y_train_m, X_test_m, y_test_m = subset_by_sex(X_train_resampled, y_train_resampled, X_test, y_test, sex_male_val)
+auc_m_lr = run_logreg_roc_only(X_train_m, y_train_m, X_test_m, y_test_m, 'Male LR')
+
+X_train_f, y_train_f, X_test_f, y_test_f = subset_by_sex(X_train_resampled, y_train_resampled, X_test, y_test, sex_female_val)
+auc_f_lr = run_logreg_roc_only(X_train_f, y_train_f, X_test_f, y_test_f, 'Female LR')
+
+plt.plot([0,1],[0,1],'--',lw=1.2,color='grey')
+plt.xlabel('False Positive Rate'); plt.ylabel('True Positive Rate')
+plt.title('ROC Curves by Gender (Logistic Regression)')
+plt.legend(loc='lower right'); plt.grid(alpha=0.3); plt.tight_layout(); plt.show()
+
+print(f"\nSummary AUCs (LR): Overall={auc_overall_lr:.3f} | Male={auc_m_lr:.3f} | Female={auc_f_lr:.3f}")
+
+
+# ==========================================================
+# Score-based Marketing Segmentation (score + sex)
+# ==========================================================
+# Use the stronger model's probabilities for targeting (XGBoost).
+# If needed, replace `y_proba_xgb` with `y_proba_log`.
+
+df_marketing = X_test.copy()
+df_marketing['score']  = y_proba_xgb
+df_marketing['y_true'] = y_test.values
+
+# Use encoded sex values identified above
+high_score_thresh = 0.80
+
+cond_male   = (df_marketing['score'] > high_score_thresh) & (df_marketing['sex'] == sex_male_val)
+cond_female = (df_marketing['score'] > high_score_thresh) & (df_marketing['sex'] == sex_female_val)
+
+df_marketing['segment'] = np.where(
+    cond_male, 'High Score Male',
+    np.where(cond_female, 'High Score Female', 'Others')
+)
+
+segment_summary = (
+    df_marketing.groupby('segment')
+    .agg(n=('y_true', 'size'),
+         pos_rate=('y_true', 'mean'),
+         avg_score=('score', 'mean'))
+    .reset_index()
+    .sort_values('avg_score', ascending=False)
+)
+
+overall_rate = df_marketing['y_true'].mean()
+segment_summary['lift'] = (segment_summary['pos_rate'] / overall_rate).round(2)
+
+print("\n--- Marketing Segmentation Summary (score + sex) ---")
+print(segment_summary)
+
+print("\nSample rows from target segments:")
+display(df_marketing[df_marketing['segment'] != 'Others'].head(10))
